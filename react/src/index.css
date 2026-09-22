@@ -77,6 +77,10 @@ body {
   background: #f1f5f9;
 }
 
+.bubble--continuation {
+  background: #7c3aed;
+}
+
 .bubble--system {
   align-self: center;
   background: transparent;
@@ -125,7 +129,8 @@ body {
 }
 
 .caption-word {
-  color: #94a3b8;
+  /* No color override here — an unspoken word (not yet reached by audioTime) should just read
+     as normal bubble text, not greyed out. */
   transition: color 0.1s ease, font-weight 0.1s ease;
 }
 
@@ -140,10 +145,11 @@ body {
 
 .chat-widget__composer {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .chat-widget__composer input {
-  flex: 1;
+  flex: 1 1 100%;
   padding: 8px 10px;
 }

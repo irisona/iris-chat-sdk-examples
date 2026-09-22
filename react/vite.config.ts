@@ -3,6 +3,8 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
+  // Served from https://irisona.github.io/iris-chat-sdk-examples/ on GitHub Pages.
+  base: "/iris-chat-sdk-examples/",
   // api.irisona.net's WebSocket upgrade only allows a fixed Origin allowlist (the main app's
   // :3000 dev port included) — any other localhost port gets a 403 at the CDN edge.
   server: { port: 3000 }

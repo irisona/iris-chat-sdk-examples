@@ -5,8 +5,10 @@ import {
   type ChatChannel,
   type ChatChannelState,
   type ChatMode,
+  type Credential,
   type MediaAttachment,
-  type ToolUsePayload
+  type ToolUsePayload,
+  type User
 } from "@irisona/chat-sdk";
 
 export type CaptionWord = { text: string; startMs: number; durationMs: number };
@@ -16,9 +18,14 @@ export type Message = {
   role: "user" | "persona" | "system";
   text: string;
   mediaAttachments?: MediaAttachment[];
-  // Present once this bubble switches into "being read aloud" mode — see subtitle_chunk below.
-  // When set, it (not `text`) is the source of truth for what the bubble renders.
+  // Present once this bubble starts being read aloud — see subtitle_chunk below. `text` (from
+  // persona_message(_chunk)) is still the full message and always renders; these words are only
+  // used to highlight the currently-spoken word within that text.
   karaokeWords?: CaptionWord[];
+  // Set on the locally-added bubble for a "continuation" intent — unlike "reply", the wire never
+  // echoes it back and the SDK doesn't synthesize a user_message event for it, so this is the only
+  // record of it. Flagged so the widget can style it apart from a normal user reply.
+  isContinuation?: boolean;
 };
 
 // api.irisona.net/v1/users/me — not part of the SDK's public API, called directly here just to
@@ -95,14 +102,16 @@ export function useChatChannel() {
   // for every message, so without this a past message's words satisfy the same "active" window
   // as the one actually playing and light back up during it.
   const [karaokeMessageId, setKaraokeMessageId] = useState<string | null>(null);
+  // Reflects Iris.authorize() specifically — separate from currentUser above, which looks up
+  // whatever bearer token was pasted into the token field via GET /v1/users/me instead.
+  const [signedInUser, setSignedInUser] = useState<User | null>(Iris.getCurrentUser());
   const channelRef = useRef<ChatChannel | null>(null);
   const unsubsRef = useRef<Array<() => void>>([]);
   // The id of the message currently being "read" word-by-word — subtitle_chunk carries no "first
   // word of a new message" flag, so this is how a fresh message's words replace the previous
-  // message's instead of appending onto it forever, and how persona_message(_chunk) knows to stop
-  // touching a bubble's text once its words take over as the source of truth. Mirrored into
-  // karaokeMessageId (state) above; this ref is what the event handler closures below actually
-  // read, since they need the current value synchronously rather than a render's stale snapshot.
+  // message's instead of appending onto it forever. Mirrored into karaokeMessageId (state) above;
+  // this ref is what the event handler closures below actually read, since they need the current
+  // value synchronously rather than a render's stale snapshot.
   const karaokeMessageIdRef = useRef<string | null>(null);
 
   const setKaraokeMessage = useCallback((id: string | null) => {
@@ -115,7 +124,9 @@ export function useChatChannel() {
   // shared setState calls.
   const connectionIdRef = useRef(0);
 
-  const connect = useCallback(async (personaId: string, token?: string, clientLanguage?: string) => {
+  const signIn = useCallback((credential: Credential) => Iris.authorize(credential), []);
+
+  const connect = useCallback(async (personaId: string, token?: string, clientLanguage?: string, initialMode: ChatMode = "text", existingAccessKey?: string) => {
     const connectionId = ++connectionIdRef.current;
 
     unsubsRef.current.forEach((unsub) => unsub());
@@ -127,7 +138,7 @@ export function useChatChannel() {
     setAccessKey(null);
     setError(null);
     setStatus("connecting");
-    setMode("text");
+    setMode(initialMode);
     setSuggestions([]);
     setEnergyBalance(null);
     setKaraokeMessage(null);
@@ -138,13 +149,15 @@ export function useChatChannel() {
     if (token) void fetchCurrentUser(token).then((label) => connectionIdRef.current === connectionId && setCurrentUser(label));
 
     try {
-      const session = await Iris.createChatSession(personaId, { token });
+      // A pasted access key skips createChatSession entirely and reconnects straight to that
+      // existing chat session (e.g. one created in a previous page load).
+      const accessKey = existingAccessKey || (await Iris.createChatSession(personaId, { token })).accessKey;
       if (connectionIdRef.current !== connectionId) return;
 
-      setAccessKey(session.accessKey);
+      setAccessKey(accessKey);
 
-      const channel = Iris.connect(session.accessKey, {
-        mode: "text",
+      const channel = Iris.connect(accessKey, {
+        mode: initialMode,
         token,
         personaId,
         clientLanguage: clientLanguage || navigator.language
@@ -163,27 +176,10 @@ export function useChatChannel() {
           setMessages((prev) => [...prev, { id: e.id, role: "user", text: e.text }]);
         }),
         channel.on("persona_message_chunk", (e) => {
-          // Once this bubble is being read word-by-word, its karaokeWords ARE the text — stop
-          // overwriting it.
-          if (karaokeMessageIdRef.current === e.id) return;
-
           setMessages((prev) => upsertPersonaMessage(prev, e.id, e.delta, false));
         }),
         channel.on("persona_message", (e) => {
-          setMessages((prev) => {
-            if (karaokeMessageIdRef.current !== e.id) {
-              return upsertPersonaMessage(prev, e.id, e.content, true, e.mediaAttachments);
-            }
-
-            // Keep the karaoke words as the visual text; only fold in media attachments.
-            const index = prev.findIndex((m) => m.id === e.id);
-            if (index === -1) return prev;
-
-            const next = [...prev];
-            next[index] = { ...next[index], mediaAttachments: e.mediaAttachments ?? next[index].mediaAttachments };
-
-            return next;
-          });
+          setMessages((prev) => upsertPersonaMessage(prev, e.id, e.content, true, e.mediaAttachments));
         }),
         channel.on("tool_use_start", (e) => {
           setMessages((prev) => [...prev, { id: `tool-${prev.length}`, role: "system", text: `🔧 ${e.tool}…` }]);
@@ -234,6 +230,8 @@ export function useChatChannel() {
     };
   }, []);
 
+  useEffect(() => Iris.onAuthChange(setSignedInUser), []);
+
   // AudioPlayer only emits state_change — currentTime ticks internally with no dedicated event,
   // so this is the same polling approach the vanilla example uses to surface it live. 80ms keeps
   // the karaoke word highlight (driven off this same audioTime) reasonably smooth.
@@ -249,6 +247,10 @@ export function useChatChannel() {
   const sendMessage = (text: string) => {
     if (!text.trim()) return;
     setSuggestions([]);
+    // createIntent() interrupts any in-flight speech (player.stop(), resetting currentTime to 0)
+    // before the message is sent — clear this too, or the just-interrupted bubble stays "current"
+    // and its first word's startMs window matches the reset audioTime, lighting it back up.
+    setKaraokeMessage(null);
     channelRef.current?.createIntent("reply", { text });
   };
 
@@ -260,6 +262,17 @@ export function useChatChannel() {
 
   const sendSelfIntroduction = () => {
     channelRef.current?.createIntent("selfintroduction", {});
+  };
+
+  // Continues an in-progress voice turn (e.g. after stopAudio() interrupts it), same payload
+  // shape as "reply". Unlike "reply", the SDK doesn't synthesize a local user_message for it —
+  // the wire never echoes it back — so the bubble is added here instead.
+  const sendContinuation = (text: string) => {
+    if (!text.trim()) return;
+    setSuggestions([]);
+    setKaraokeMessage(null);
+    setMessages((prev) => [...prev, { id: `continuation-${prev.length}`, role: "user", text, isContinuation: true }]);
+    channelRef.current?.createIntent("continuation", { text });
   };
 
   const toggleVoice = () => {
@@ -306,6 +319,8 @@ export function useChatChannel() {
     suggestions,
     energyBalance,
     currentUser,
+    signedInUser,
+    signIn,
     audioState,
     audioTime,
     karaokeMessageId,
@@ -313,6 +328,7 @@ export function useChatChannel() {
     sendMessage,
     sendInitiation,
     sendSelfIntroduction,
+    sendContinuation,
     loadHistory,
     toggleVoice,
     stopAudio
