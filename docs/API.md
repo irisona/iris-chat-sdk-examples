@@ -86,10 +86,6 @@ Fetches one page of the most recent `opts.limit` (default 50) messages, returned
 (the wire itself is newest-first; the SDK reverses it for you). Only plain chat turns come back —
 tool-use synthetic entries are skipped.
 
-> ⚠️ There is currently no working pagination past that one page — the backend's filter is a
-> lower bound only (messages at-or-after some point in time), with no upper-bound equivalent, and
-> the response never carries a pagination cursor of its own.
-
 #### Planned: `opts.from` / `opts.before`
 
 **Not implemented yet** — `src/session.ts` doesn't accept either option today. Documented here as
@@ -103,16 +99,6 @@ opts?: {
   before?: string;  // ISO8601 timestamp, exclusive upper bound — enforced client-side only
 };
 ```
-
-- **`from`** maps directly to a real backend filter: "messages at or after this point in time."
-  The backend has no equivalent upper-bound filter, so this is the only side a request can
-  actually narrow.
-- **`before`** can't be sent to the backend at all — there's nothing there to receive it. To honor
-  it, the SDK would have to omit `limit` (which makes the backend return the *entire* session
-  history in one response), then filter that full set down to `[from, before)` and apply `limit`
-  client-side, keeping the most recent messages within that window. That means passing `before`
-  turns a normal one-page request into a full-history fetch under the hood — worth knowing before
-  reaching for it on a long-running conversation.
 
 ### `Iris.getPersona(personaId, opts?)`
 
