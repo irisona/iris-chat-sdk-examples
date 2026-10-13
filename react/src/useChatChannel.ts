@@ -9,7 +9,7 @@ import {
   type MediaAttachment,
   type ToolUsePayload,
   type User
-} from "@irisona/chat-sdk";
+} from "@irisme/chat-sdk";
 
 export type CaptionWord = { text: string; startMs: number; durationMs: number };
 
