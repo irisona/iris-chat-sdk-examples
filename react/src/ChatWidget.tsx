@@ -12,6 +12,23 @@ type TextSegment = { text: string; className?: string };
 // just skipped (no highlight for that word) instead of teleporting.
 const MAX_WORD_LOOKAHEAD = 40;
 
+// A link the bubble shows but the SDK never speaks (it strips links before TTS), matched at the
+// cursor after any whitespace, the same way the SDK spots one.
+const LINK_AT_CURSOR = /\s*\(?(?:https?:\/\/|www\.)\S+/iy;
+
+// Where the next spoken word can start: past any links at the cursor, so a long unspoken link
+// doesn't push every word after it beyond MAX_WORD_LOOKAHEAD.
+function skipLinks(text: string, cursor: number): number {
+  let from = cursor;
+  LINK_AT_CURSOR.lastIndex = from;
+
+  while (LINK_AT_CURSOR.exec(text)) {
+    from = LINK_AT_CURSOR.lastIndex;
+  }
+
+  return from;
+}
+
 // Splits a persona bubble's full text into plain runs plus per-word spans wherever a karaoke
 // word (from subtitle_chunk) can be located in it, so the whole message is visible immediately
 // while the word currently being spoken still lights up inline. Matches words in order via a
@@ -24,8 +41,9 @@ function buildTextSegments(text: string, words: CaptionWord[], isCurrent: boolea
   let cursor = 0;
 
   for (const w of words) {
-    const idx = text.indexOf(w.text, cursor);
-    if (idx === -1 || idx - cursor > MAX_WORD_LOOKAHEAD) continue;
+    const searchFrom = skipLinks(text, cursor);
+    const idx = text.indexOf(w.text, searchFrom);
+    if (idx === -1 || idx - searchFrom > MAX_WORD_LOOKAHEAD) continue;
 
     if (idx > cursor) segments.push({ text: text.slice(cursor, idx) });
 
