@@ -13,8 +13,9 @@ type TextSegment = { text: string; className?: string };
 const MAX_WORD_LOOKAHEAD = 40;
 
 // A link the bubble shows but the SDK never speaks (it strips links before TTS), matched at the
-// cursor after any whitespace, the same way the SDK spots one.
-const LINK_AT_CURSOR = /\s*\(?(?:https?:\/\/|www\.)\S+/iy;
+// cursor the same way the SDK spots one: a markdown link's `](url)` after its spoken label, a
+// link in parens, or a bare link minus the punctuation that ends the sentence after it.
+const LINK_AT_CURSOR = /\]?\s*\((?:https?:\/\/|www\.)[^\s)]*\)|\s*(?:https?:\/\/|www\.)\S*[^\s.,!?;:)'"]/iy;
 
 // Where the next spoken word can start: past any links at the cursor, so a long unspoken link
 // doesn't push every word after it beyond MAX_WORD_LOOKAHEAD.
@@ -41,20 +42,23 @@ function buildTextSegments(text: string, words: CaptionWord[], isCurrent: boolea
   let cursor = 0;
 
   for (const w of words) {
+    // Without the leading space the SDK puts on every word but the first: a spoken word can sit
+    // right after a symbol the TTS never heard, like the `[` of a markdown link's label.
+    const word = w.text.trimStart();
     const searchFrom = skipLinks(text, cursor);
-    const idx = text.indexOf(w.text, searchFrom);
-    if (idx === -1 || idx - searchFrom > MAX_WORD_LOOKAHEAD) continue;
+    const idx = text.indexOf(word, searchFrom);
+    if (!word || idx === -1 || idx - searchFrom > MAX_WORD_LOOKAHEAD) continue;
 
     if (idx > cursor) segments.push({ text: text.slice(cursor, idx) });
 
     const isActive = isCurrent && audioTime >= w.startMs && audioTime < w.startMs + w.durationMs;
     const isSpoken = !isCurrent || audioTime >= w.startMs + w.durationMs;
     segments.push({
-      text: w.text,
+      text: word,
       className: `caption-word${isActive ? " caption-word--active" : isSpoken ? " caption-word--spoken" : ""}`
     });
 
-    cursor = idx + w.text.length;
+    cursor = idx + word.length;
   }
 
   if (cursor < text.length) segments.push({ text: text.slice(cursor) });
