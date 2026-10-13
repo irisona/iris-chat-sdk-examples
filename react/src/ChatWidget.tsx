@@ -1,4 +1,4 @@
-import { Iris, type ChatMode } from "@irisona/chat-sdk";
+import { Iris, type ChatMode } from "@irisme/chat-sdk";
 import { useState } from "react";
 import { type CaptionWord, USER_DETAIL_URL, useChatChannel } from "./useChatChannel";
 

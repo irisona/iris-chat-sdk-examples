@@ -1,4 +1,4 @@
-# @irisona/chat-sdk API Reference
+# @irisme/chat-sdk API Reference
 
 
 ## Contents
@@ -15,7 +15,7 @@
 ## Quick start
 
 ```ts
-import { Iris } from "@irisona/chat-sdk";
+import { Iris } from "@irisme/chat-sdk";
 
 // Optional: sign in first so the chat session is tied to a real user instead of a guest.
 // createChatSession()/connect() below pick up the stored token automatically — no need to
@@ -86,6 +86,10 @@ Fetches one page of the most recent `opts.limit` (default 50) messages, returned
 (the wire itself is newest-first; the SDK reverses it for you). Only plain chat turns come back —
 tool-use synthetic entries are skipped.
 
+> ⚠️ There is currently no working pagination past that one page — the backend's filter is a
+> lower bound only (messages at-or-after some point in time), with no upper-bound equivalent, and
+> the response never carries a pagination cursor of its own.
+
 #### Planned: `opts.from` / `opts.before`
 
 **Not implemented yet** — `src/session.ts` doesn't accept either option today. Documented here as
@@ -99,6 +103,16 @@ opts?: {
   before?: string;  // ISO8601 timestamp, exclusive upper bound — enforced client-side only
 };
 ```
+
+- **`from`** maps directly to a real backend filter: "messages at or after this point in time."
+  The backend has no equivalent upper-bound filter, so this is the only side a request can
+  actually narrow.
+- **`before`** can't be sent to the backend at all — there's nothing there to receive it. To honor
+  it, the SDK would have to omit `limit` (which makes the backend return the *entire* session
+  history in one response), then filter that full set down to `[from, before)` and apply `limit`
+  client-side, keeping the most recent messages within that window. That means passing `before`
+  turns a normal one-page request into a full-history fetch under the hood — worth knowing before
+  reaching for it on a long-running conversation.
 
 ### `Iris.getPersona(personaId, opts?)`
 
@@ -261,7 +275,7 @@ type SpeechEvent =
 - **`subtitle_chunk`** — one word at a time, with its timing relative to that message's own
   playback start (`AudioPlayer.currentTime` resets the same way, per message id). Use this to
   drive karaoke-style captions — see `addSpokenWord`/`updateCaptionHighlight` in
-  `examples/vanilla/main.ts` for a full implementation, including the "no space if the provider
+  the [examples repo](https://github.com/irisona/iris-chat-sdk-examples) for a full implementation, including the "no space if the provider
   split one word across two segments" edge case.
 - **`audio_chunk`** — raw PCM (16kHz, mono) for the current message. You don't need to do anything
   with this yourself; it's already been handed to `player.enqueue()`. Useful only if you want to
@@ -285,7 +299,7 @@ class AudioPlayer {
 }
 ```
 
-- **`currentTime`** has no dedicated change event — poll it (both examples use a `setInterval`,
+- **`currentTime`** has no dedicated change event — poll it (the [examples](https://github.com/irisona/iris-chat-sdk-examples) use a `setInterval`,
   16–80ms) if you're driving a UI off it, e.g. caption highlighting.
 - **`stop()`** is a hard interrupt: drops everything queued/scheduled and silences immediately by
   swapping the internal `GainNode` rather than stopping every buffer source by hand. `reply`
@@ -305,7 +319,7 @@ interface TokenStorageAdapter {
 The default adapter is in-memory — nothing survives a page reload unless you opt in:
 
 ```ts
-import { Iris, localStorageAdapter } from "@irisona/chat-sdk";
+import { Iris, localStorageAdapter } from "@irisme/chat-sdk";
 
 Iris.configure({ storage: localStorageAdapter });
 ```
