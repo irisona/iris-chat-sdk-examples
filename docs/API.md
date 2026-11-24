@@ -6,6 +6,7 @@
 - [Quick start](#quick-start)
 - [`Iris` namespace](#iris-namespace)
 - [`ChatChannel`](#chatchannel)
+- [Client tools](#client-tools)
 - [`SpeechChannel`](#speechchannel)
 - [`AudioPlayer`](#audioplayer)
 - [Token storage](#token-storage)
@@ -40,7 +41,7 @@ Everything the SDK exposes hangs off this one object.
 ### `Iris.createChatSession(personaId, opts?)`
 
 ```ts
-function createChatSession(personaId: string, opts?: { token?: string }): Promise<ChatSession>;
+function createChatSession(personaId: string, opts?: { token?: string; modeId?: string }): Promise<ChatSession>;
 ```
 
 Opens a new chat session against a persona. Pass
@@ -48,6 +49,16 @@ Opens a new chat session against a persona. Pass
 session, or omit it for a guest session — the backend issues one from the anonymous request.
 Resolves to `{ accessKey }`, the capability string that authorizes `Iris.connect()` and
 `Iris.getChatHistory()`.
+
+Pass `opts.modeId` to run the session in a specific persona mode (a `PersonaMode` id, e.g.
+`persona.currentMode.id` from `Iris.getPersona()`). Omit it and the backend uses the persona's
+current mode. The mode is bound to the session at creation: `Iris.connect()` sends no mode, so
+reconnecting to an existing `accessKey` keeps the mode it was created with — create a new session
+to switch modes.
+
+```ts
+const session = await Iris.createChatSession("persona_id", { modeId: "mode_id" });
+```
 
 Unlike the main app, this **never** falls back to a bundled guest credential — this package ships
 to third-party sites, so no such secret exists here. No token means no `Authorization` header at
@@ -63,6 +74,11 @@ interface ConnectOptions {
   token?: string;
   clientLanguage?: string;
   personaId: string;
+  speech?: SpeechOptions;
+}
+
+interface SpeechOptions {
+  speed?: number; // Fish Audio voices only, 0.5-2.0
 }
 ```
 
@@ -75,6 +91,9 @@ speech subsystem's provider-token lookups.
 `opts.personaId` is required even for `mode: "text"` — a channel constructed as text-only can
 still be switched into voice with `channel.setMode("audio_text")` later, and by then it's too late
 to ask for a personaId. See [why voice needs it](#speechchannel) below.
+
+`opts.speech.speed` sets how fast a Fish Audio persona speaks, replacing the persona's own speed.
+It works the same as [`speech.setSpeed()`](#speechsetspeedspeed) called before the first reply.
 
 ### `Iris.getChatHistory(accessKey, opts?)`
 
@@ -192,7 +211,7 @@ class ChatChannel {
   once<K extends ChatEventType>(event: K, cb: (e: Extract<ChatEvent, { type: K }>) => void): Unsubscribe;
 
   setMode(mode: ChatMode): void;
-  createIntent(type: IntentType, payload: unknown): Promise<IntentResult>;
+  createIntent(type: IntentType, payload: unknown, opts?: { tools?: ClientTool[] }): Promise<IntentResult>;
   disconnect(): void;
 }
 ```
@@ -208,10 +227,16 @@ Switches between `"text"` and `"audio_text"`. Lazily opens or tears down the spe
 `channel.speech` itself is always the same object, so listeners attached once (e.g. on
 `channel.speech.player`) keep working across mode toggles. A no-op if `mode` is unchanged.
 
-### `channel.createIntent(type, payload)`
+### `channel.createIntent(type, payload, opts?)`
 
 ```ts
-type IntentType = "reply" | "continuation" | "initiation" | "extra_context" | "selfintroduction";
+type IntentType =
+  | "reply"
+  | "continuation"
+  | "initiation"
+  | "extra_context"
+  | "selfintroduction"
+  | "tool_continuation";
 
 interface IntentResult {
   id: string;
@@ -227,10 +252,13 @@ Sends a `new_message` push and resolves once the backend acks it (`"sent"`) or r
 | `type` | Payload | Use |
 |---|---|---|
 | `"reply"` | `{ text: string }` or a plain `string` | Normal user turn. Emits a synthesized `user_message` event locally (the wire never echoes it back). In `"audio_text"` mode, this also stops any in-flight speech playback — a new send always interrupts, mirroring the app's barge-in behavior, so most consumers never call `player.stop()` themselves. |
-| `"continuation"` | same as `"reply"` | Continues an in-progress voice turn; wire-encoded specially (`context` instead of `content`) — ported verbatim from the main app. |
+| `"continuation"` | same as `"reply"` | Hands the persona context to carry on from (e.g. "the user picked the blue one"), without it reading as something the user said. Wire-encoded specially (`context` instead of `content`), ported verbatim from the main app. |
 | `"initiation"` | `{}` | Opens the conversation with no user input — the persona speaks first, whatever it'd naturally open with. |
 | `"selfintroduction"` | `{}` | Asks the persona to introduce itself specifically. |
 | `"extra_context"` | `{ text: string }` | Same shape as `"reply"`, different wire intent type. |
+| `"tool_continuation"` | `ToolResult[]` or a single `ToolResult` | Answers a tool call that is waiting on the client, by the call's message id. See [Answering a call](#answering-a-call). `result` is a free-form object (`Record<string, unknown>`), sent to the persona as it stands. An empty list, or a result without a string `messageId` or an object `result`, resolves `"failed"` with `reason: "invalid_tool_results"` and sends nothing. |
+
+`opts.tools` offers [client tools](#client-tools) to the persona on this push.
 
 Multiple `createIntent()` calls are matched to their `intent:created` acks strictly FIFO — don't
 rely on out-of-order resolution.
@@ -240,6 +268,107 @@ rely on out-of-order resolution.
 Leaves the Phoenix channel, disconnects the socket, disconnects `channel.speech` (which also stops
 any playing audio), and transitions `state` to `"closed"`. Always call this on teardown (page
 unload, component unmount, switching personas) — see both example apps for the pattern.
+
+## Client tools
+
+A client tool is a tool your page runs instead of the backend. You describe it to the persona,
+the persona decides when to call it from what the user says, and your code does the work. For
+example, a "next" button can become something the user says out loud ("show me someone else"),
+in their own words and in any language.
+
+```ts
+interface ClientTool {
+  name: string;
+  description: string; // tells the model when to call it, so be specific
+  parameters: Record<string, unknown>; // JSON Schema for the arguments, passed to the model as is
+}
+```
+
+### Lifecycle
+
+1. **Offer.** Pass the tools to `createIntent(type, payload, { tools })`. The model only sees the
+   tools carried by the push in front of it. To keep an offer open across turns, pass the same
+   tools on every intent until the user has answered.
+2. **Call.** When the persona calls one, a `tool_use` event arrives with
+   `payload.name === tool.name`. It's the same event used for backend tools, so check the name.
+   Any other fields on the call are passed through as the backend sends them (wire snake_case,
+   not renamed).
+3. **Act.** Do whatever the tool stands for in your UI.
+4. **Answer.** The persona's turn ends on the call and waits for you. It never sends a final
+   `persona_message` for that turn. The SDK closes the turn for you: it resets the streaming id
+   and, in `"audio_text"` mode, flushes speech, so the next turn starts clean. Then send
+   whatever the conversation should continue with (see [below](#answering-a-call)).
+5. **Take down.** Stop passing `tools` once the choice is made. Nothing is held between pushes, so
+   there is nothing to clear.
+
+### Example
+
+```ts
+const NEXT_TOOL = "user_wants_next_persona";
+
+const tools = [
+  {
+    name: NEXT_TOOL,
+    description:
+      "The user is done here and wants to meet someone else. Call this as soon as they say so " +
+      "(\"next\", \"someone else\", anything that means it), without asking them to confirm.",
+    parameters: { type: "object", properties: {}, required: [], additionalProperties: false }
+  }
+];
+
+let settled = false;
+
+// Every send carries the tools until the user has made their choice.
+const send = (text: string) => channel.createIntent("reply", { text }, settled ? undefined : { tools });
+
+channel.on("tool_use", (e) => {
+  if (e.payload.name !== NEXT_TOOL || settled) return;
+
+  // The persona may say it again after being told what the user wants. Act only once.
+  settled = true;
+  channel.disconnect();
+  openNextPersona();
+});
+```
+
+### Answering a call
+
+There are two ways to continue after a call, depending on whether the call can be answered by id:
+
+- **With a result**: `createIntent("tool_continuation", [{ messageId, result }])` answers that
+  exact call. `messageId` is the call's own message id. The built-in `signup` tool exposes it as
+  `payload.messageId`:
+
+  ```ts
+  channel.on("tool_use", async (e) => {
+    if (e.payload.name !== "signup") return;
+
+    await Iris.authorize(credential);
+    await channel.createIntent("tool_continuation", [
+      { messageId: e.payload.messageId, result: { sign_up: true, message: "user has successfully signed in" } }
+    ]);
+  });
+  ```
+
+- **With context**: `createIntent("continuation", { text })` tells the persona what happened in
+  plain words, for example "The user chose to keep talking with you. Carry on the conversation."
+  Use this when the call has nothing to report back, or when you don't need to tie the answer to
+  that call.
+
+If you don't send anything, the conversation just waits for the user's next `reply`, which is
+fine when your UI has already moved on (like the example above).
+
+### Tips
+
+- **Write descriptions as instructions to the model.** Say when to call the tool and when not to:
+  "only when they mean it about this conversation, not for a passing compliment." Vague
+  descriptions get vague calls.
+- **The persona can call a tool more than once.** Guard your handler, as `settled` does above.
+- **Name collisions:** choose names that can't clash with the built-in tools listed under
+  [`ToolUsePayload`](#toolusepayload). If you refer to a client tool by name in instruction text
+  you send the persona (e.g. a `continuation`), use the `client__` prefix, as in
+  `client__user_wants_next_persona`. That's the name the model sees. `tool_use` events give you
+  back the plain name.
 
 ## `SpeechChannel`
 
@@ -254,6 +383,7 @@ class SpeechChannel {
   player: AudioPlayer;
 
   on<K extends SpeechEventType>(event: K, cb: (e: Extract<SpeechEvent, { type: K }>) => void): Unsubscribe;
+  setSpeed(speed: number | undefined): void;
   disconnect(): void;
 }
 ```
@@ -261,6 +391,42 @@ class SpeechChannel {
 You normally don't call anything else on it directly — `ChatChannel.setMode("audio_text")` drives
 `activate()`/`deactivate()`, and streaming persona text is routed into it automatically. Just
 subscribe to its events and to `channel.speech.player`.
+
+### `speech.setSpeed(speed)`
+
+Sets how fast a **Fish Audio** persona speaks. ElevenLabs personas ignore it — `Iris.getPersona()`
+tells you the voice provider if you want to hide your speed control for them.
+
+- The value replaces the persona's own speed (it doesn't scale it).
+- It's clamped to 0.5–2.0, Fish Audio's documented range for `prosody.speed` (1.0 = normal,
+  0.5 = half, 2.0 = double; see Fish's [live TTS](https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech-live-with-timestamps)
+  and [TTS](https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech) references).
+  `3` plays at 2.0, `0.1` at 0.5. `undefined`, `NaN` or `Infinity` goes back to the persona's own speed.
+- A reply that's already playing keeps its speed; the change is heard from the next reply on,
+  including the first reply after `setMode("audio_text")`.
+
+```ts
+channel.speech.setSpeed(1.25);
+```
+
+#### How a change reaches the next reply
+
+Fish Audio fixes the speed in the `start` frame each socket sends when it opens (`prosody.speed`),
+and a socket can't change it afterwards. The SDK opens a fresh socket for every reply, so in most
+cases the new speed simply rides on the next one.
+
+The exception is the socket `setMode("audio_text")` opens straight away, before any reply, which
+the first reply then reuses. If the speed changes while that socket is open and unused, the SDK
+marks it stale, and the next reply opens a new socket with the new speed instead of reusing it.
+That costs one extra connection and one extra provider token, and only when the speed really
+changes:
+
+- Setting the speed back to the value the open socket already uses clears the stale mark, so
+  nothing reconnects.
+- ElevenLabs personas are never marked stale, because `setSpeed` doesn't affect them.
+- A change made while a reply is streaming doesn't cut that reply. Its socket is replaced at the
+  next reply anyway.
+- `setMode("text")` and `disconnect()` drop the mark along with the socket.
 
 ### `speech.on(event, cb)`
 
@@ -274,9 +440,9 @@ type SpeechEvent =
 
 - **`subtitle_chunk`** — one word at a time, with its timing relative to that message's own
   playback start (`AudioPlayer.currentTime` resets the same way, per message id). Use this to
-  drive karaoke-style captions — see `addSpokenWord`/`updateCaptionHighlight` in
-  the [examples repo](https://github.com/irisona/iris-chat-sdk-examples) for a full implementation, including the "no space if the provider
-  split one word across two segments" edge case.
+  drive karaoke-style captions — see the `subtitle_chunk` handler in
+  [`react/src/useChatChannel.ts`](../react/src/useChatChannel.ts) and `buildTextSegments` in
+  [`react/src/ChatWidget.tsx`](../react/src/ChatWidget.tsx) for a full implementation.
 - **`audio_chunk`** — raw PCM (16kHz, mono) for the current message. You don't need to do anything
   with this yourself; it's already been handed to `player.enqueue()`. Useful only if you want to
   do your own visualization/recording.
@@ -299,7 +465,7 @@ class AudioPlayer {
 }
 ```
 
-- **`currentTime`** has no dedicated change event — poll it (the [examples](https://github.com/irisona/iris-chat-sdk-examples) use a `setInterval`,
+- **`currentTime`** has no dedicated change event — poll it (the [React example](../react/src/useChatChannel.ts) uses a `setInterval`,
   16–80ms) if you're driving a UI off it, e.g. caption highlighting.
 - **`stop()`** is a hard interrupt: drops everything queued/scheduled and silences immediately by
   swapping the internal `GainNode` rather than stopping every buffer source by hand. `reply`
@@ -339,6 +505,8 @@ All exported from the package root.
 | `User` | `{ id: string; [key: string]: unknown }` |
 | `HistoryMessage` | `{ id, role: "user" \| "persona", text, mediaAttachments?, insertedAt }` |
 | `MediaAttachment` | `{ mediaId, name, mediaUrl? }` |
+| `ClientTool` | `{ name, description, parameters }`. See [Client tools](#client-tools). |
+| `ToolResult` | `{ messageId: string; result: Record<string, unknown> }` |
 | `ChatError` | `{ category?, message?, reason?, [key: string]: unknown }` |
 | `ChatMode` | `"text" \| "audio_text"` |
 | `ChatChannelState` | `"connecting" \| "joined" \| "errored" \| "closed"` |
@@ -371,7 +539,9 @@ type ChatEvent =
 - **`tool_use_start`** / **`tool_use`** bracket a persona action (image/video/voice generation,
   avatar changes, persona creation, etc.) — see `ToolUsePayload` below for the typed cases and
   their extra fields.
-- **`reply_suggestions`** — quick-reply chips the persona/backend suggests.
+- **`reply_suggestions`** — quick-reply chips the persona/backend suggests. Also fires right after
+  a successful join (just after `state_change` → `"joined"`) when the session has opening
+  suggestions, so subscribe before the channel joins to catch them.
 - **`energy_balance`** — the user's remaining energy/credits after this turn.
 
 ### `ToolUsePayload`
@@ -388,7 +558,8 @@ This is the SDK's own typed source of truth for tool-use payloads — there was 
 server-side to port from. The three shown above are the common cases; the fallback arm covers
 every other `name` the backend can send (avatar changes, persona creation/drafting, signup,
 energy package selection, and more) — treat those as forward-compatible and read whatever fields
-you need off them.
+you need off them. Calls to your own [client tools](#client-tools) arrive through this fallback
+arm too.
 
 ## Error handling
 

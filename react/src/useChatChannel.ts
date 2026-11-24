@@ -105,6 +105,10 @@ export function useChatChannel() {
   // Reflects Iris.authorize() specifically — separate from currentUser above, which looks up
   // whatever bearer token was pasted into the token field via GET /v1/users/me instead.
   const [signedInUser, setSignedInUser] = useState<User | null>(Iris.getCurrentUser());
+  // Fish Audio playback speed (0.5-2.0), or undefined for the persona's own speed. Mirrored into
+  // speedRef so connect() (memoized once) reads the current value rather than a stale snapshot.
+  const [speed, setSpeedState] = useState<number | undefined>(undefined);
+  const speedRef = useRef<number | undefined>(undefined);
   const channelRef = useRef<ChatChannel | null>(null);
   const unsubsRef = useRef<Array<() => void>>([]);
   // The id of the message currently being "read" word-by-word — subtitle_chunk carries no "first
@@ -160,7 +164,10 @@ export function useChatChannel() {
         mode: initialMode,
         token,
         personaId,
-        clientLanguage: clientLanguage || navigator.language
+        clientLanguage: clientLanguage || navigator.language,
+        // Same as calling channel.speech.setSpeed() before the first reply. ElevenLabs personas
+        // ignore it.
+        speech: { speed: speedRef.current }
       });
 
       if (connectionIdRef.current !== connectionId) {
@@ -287,6 +294,14 @@ export function useChatChannel() {
     if (next === "text") setKaraokeMessage(null);
   };
 
+  // Takes effect from the next reply on — one already playing keeps its speed. undefined goes back
+  // to the persona's own speed. Only Fish Audio voices honor it.
+  const setSpeed = (next: number | undefined) => {
+    speedRef.current = next;
+    setSpeedState(next);
+    channelRef.current?.speech.setSpeed(next);
+  };
+
   const stopAudio = () => {
     channelRef.current?.speech.player.stop();
     setKaraokeMessage(null);
@@ -331,6 +346,8 @@ export function useChatChannel() {
     sendContinuation,
     loadHistory,
     toggleVoice,
+    speed,
+    setSpeed,
     stopAudio
   };
 }

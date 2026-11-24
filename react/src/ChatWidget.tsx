@@ -88,6 +88,8 @@ export function ChatWidget({ defaultPersonaId }: { defaultPersonaId: string }) {
     sendContinuation,
     loadHistory,
     toggleVoice,
+    speed,
+    setSpeed,
     stopAudio
   } = useChatChannel();
   const [input, setInput] = useState("");
@@ -193,6 +195,7 @@ export function ChatWidget({ defaultPersonaId }: { defaultPersonaId: string }) {
     `state: ${status}`,
     energyBalance !== null ? `energy: ${energyBalance}` : null,
     mode === "audio_text" ? `audio: ${audioState} (${Math.round(audioTime)}ms)` : null,
+    `speed: ${speed ?? "persona default"}`,
     error ? `error: ${error}` : null
   ].filter(Boolean);
 
@@ -333,6 +336,25 @@ export function ChatWidget({ defaultPersonaId }: { defaultPersonaId: string }) {
         <button onClick={() => handleContinuation(input)}>Send continuation</button>
         <button onClick={toggleVoice}>{mode === "audio_text" ? "🔊" : "🔇"}</button>
         <button onClick={stopAudio}>⏹</button>
+      </div>
+
+      {/* channel.speech.setSpeed() — Fish Audio voices only (ElevenLabs ignores it). Heard from the
+          next reply on; can be set before Connect too, and is passed as connect's speech.speed. */}
+      <div className="chat-widget__speed">
+        <label>
+          Speed (Fish Audio) {speed?.toFixed(2) ?? "default"}
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.05}
+            value={speed ?? 1}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+          />
+        </label>
+        <button type="button" onClick={() => setSpeed(undefined)} disabled={speed === undefined}>
+          Reset
+        </button>
       </div>
     </div>
   );
