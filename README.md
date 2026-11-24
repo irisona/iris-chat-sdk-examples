@@ -1,26 +1,19 @@
 # iris-chat-sdk-examples
 
-Standalone example apps demonstrating `@irisona/chat-sdk`.
+Standalone example apps demonstrating [`@irisme/chat-sdk`](https://www.npmjs.com/package/@irisme/chat-sdk).
 
 ## Examples
 
-- [`react/`](react/) — React chat widget using `@irisona/chat-sdk`.
+- [`react/`](react/) — React chat widget using `@irisme/chat-sdk`.
 
 ## Setup
 
-`@irisona/chat-sdk` is published to GitHub Packages under the `irisona` org. Before running any example:
+`@irisme/chat-sdk` is on the public npm registry, so no token or `.npmrc` is needed:
 
-1. Create a GitHub personal access token with `read:packages` scope (Settings → Developer settings → Personal access tokens → Tokens (classic)).
-2. In the example's folder, copy `.npmrc.example` to `.npmrc` and fill in your token:
-   ```bash
-   cd react
-   cp .npmrc.example .npmrc
-   # edit .npmrc, replace YOUR_GITHUB_TOKEN_WITH_read:packages_SCOPE with your token
-   ```
-3. Install and run:
-   ```bash
-   npm install
-   npm run dev
-   ```
+```bash
+cd react
+npm install
+npm run dev
+```
 
-`.npmrc` is gitignored — never commit it.
+API reference: [`docs/API.md`](docs/API.md).

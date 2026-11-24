@@ -1,4 +1,4 @@
-import { Iris, type ChatMode } from "@irisona/chat-sdk";
+import { Iris, type ChatMode } from "@irisme/chat-sdk";
 import { useState } from "react";
 import { type CaptionWord, USER_DETAIL_URL, useChatChannel } from "./useChatChannel";
 
@@ -12,6 +12,24 @@ type TextSegment = { text: string; className?: string };
 // just skipped (no highlight for that word) instead of teleporting.
 const MAX_WORD_LOOKAHEAD = 40;
 
+// A link the bubble shows but the SDK never speaks (it strips links before TTS), matched at the
+// cursor the same way the SDK spots one: a markdown link's `](url)` after its spoken label, a
+// link in parens, or a bare link minus the punctuation that ends the sentence after it.
+const LINK_AT_CURSOR = /\]?\s*\((?:https?:\/\/|www\.)[^\s)]*\)|\s*(?:https?:\/\/|www\.)\S*[^\s.,!?;:)'"]/iy;
+
+// Where the next spoken word can start: past any links at the cursor, so a long unspoken link
+// doesn't push every word after it beyond MAX_WORD_LOOKAHEAD.
+function skipLinks(text: string, cursor: number): number {
+  let from = cursor;
+  LINK_AT_CURSOR.lastIndex = from;
+
+  while (LINK_AT_CURSOR.exec(text)) {
+    from = LINK_AT_CURSOR.lastIndex;
+  }
+
+  return from;
+}
+
 // Splits a persona bubble's full text into plain runs plus per-word spans wherever a karaoke
 // word (from subtitle_chunk) can be located in it, so the whole message is visible immediately
 // while the word currently being spoken still lights up inline. Matches words in order via a
@@ -24,19 +42,23 @@ function buildTextSegments(text: string, words: CaptionWord[], isCurrent: boolea
   let cursor = 0;
 
   for (const w of words) {
-    const idx = text.indexOf(w.text, cursor);
-    if (idx === -1 || idx - cursor > MAX_WORD_LOOKAHEAD) continue;
+    // Without the leading space the SDK puts on every word but the first: a spoken word can sit
+    // right after a symbol the TTS never heard, like the `[` of a markdown link's label.
+    const word = w.text.trimStart();
+    const searchFrom = skipLinks(text, cursor);
+    const idx = text.indexOf(word, searchFrom);
+    if (!word || idx === -1 || idx - searchFrom > MAX_WORD_LOOKAHEAD) continue;
 
     if (idx > cursor) segments.push({ text: text.slice(cursor, idx) });
 
     const isActive = isCurrent && audioTime >= w.startMs && audioTime < w.startMs + w.durationMs;
     const isSpoken = !isCurrent || audioTime >= w.startMs + w.durationMs;
     segments.push({
-      text: w.text,
+      text: word,
       className: `caption-word${isActive ? " caption-word--active" : isSpoken ? " caption-word--spoken" : ""}`
     });
 
-    cursor = idx + w.text.length;
+    cursor = idx + word.length;
   }
 
   if (cursor < text.length) segments.push({ text: text.slice(cursor) });
@@ -66,6 +88,8 @@ export function ChatWidget({ defaultPersonaId }: { defaultPersonaId: string }) {
     sendContinuation,
     loadHistory,
     toggleVoice,
+    speed,
+    setSpeed,
     stopAudio
   } = useChatChannel();
   const [input, setInput] = useState("");
@@ -171,6 +195,7 @@ export function ChatWidget({ defaultPersonaId }: { defaultPersonaId: string }) {
     `state: ${status}`,
     energyBalance !== null ? `energy: ${energyBalance}` : null,
     mode === "audio_text" ? `audio: ${audioState} (${Math.round(audioTime)}ms)` : null,
+    `speed: ${speed ?? "persona default"}`,
     error ? `error: ${error}` : null
   ].filter(Boolean);
 
@@ -311,6 +336,25 @@ export function ChatWidget({ defaultPersonaId }: { defaultPersonaId: string }) {
         <button onClick={() => handleContinuation(input)}>Send continuation</button>
         <button onClick={toggleVoice}>{mode === "audio_text" ? "🔊" : "🔇"}</button>
         <button onClick={stopAudio}>⏹</button>
+      </div>
+
+      {/* channel.speech.setSpeed() — Fish Audio voices only (ElevenLabs ignores it). Heard from the
+          next reply on; can be set before Connect too, and is passed as connect's speech.speed. */}
+      <div className="chat-widget__speed">
+        <label>
+          Speed (Fish Audio) {speed?.toFixed(2) ?? "default"}
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.05}
+            value={speed ?? 1}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+          />
+        </label>
+        <button type="button" onClick={() => setSpeed(undefined)} disabled={speed === undefined}>
+          Reset
+        </button>
       </div>
     </div>
   );

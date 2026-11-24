@@ -153,3 +153,21 @@ body {
   flex: 1 1 100%;
   padding: 8px 10px;
 }
+
+.chat-widget__speed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chat-widget__speed label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-widget__speed input {
+  flex: 1;
+}
